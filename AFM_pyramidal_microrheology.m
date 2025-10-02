@@ -9,6 +9,7 @@ foldername = '';
 
 %Experiment-specific settings
 exclude_files = ["test"];
+probe_type = "pyramid"; %Choose contact model to use: colloid, pyramid, or blunted pyramid
 
 %Load data
 files = struct2table(dir([datapath,foldername,'\*.ibw']));
@@ -22,12 +23,15 @@ timepts = [dwell, 12,22,26.2913,29.2913,31.2913,31.7913,31.9913,32.1913];%progra
 freqs = [0.1,0.3,0.7,1,3,10,30,50]; %frequencies tested, Hz
 
 nu = 0.5; %assume incompressible
-half_angle = 35*pi/180; %rad
 b0 = 5.2e-6; %nN s / nm, hydrodynamic drag coefficient
+half_angle = 35*pi/180; %rad, half angle for pyramidal probe
+R_coll = 12.5; %um, radius of sphere for colloidal probe
+R_blunt = 40; %nm, tip radius of curvature for blunted pyramid probe
 
 i_approach = 5000;
 i_sampling = 1000;
 i_times = floor(rate * timepts);
+cp_tolerance = 2; %tuning parameter for detecting contact point
 
 %Initialize results and plots
 results = table();
@@ -62,7 +66,7 @@ for I = 1:nfiles
     defl_init = defl_raw(1:i_relaxed) * 1e9;
     fit_init = polyfit(1:i_sampling,defl_init(1:i_sampling),1);
     defl_init = defl_init - fit_init(1) * [1:i_relaxed]' - fit_init(2);
-    threshold = mean(defl_init(1:i_sampling)) + 2*std(defl_init(1:i_sampling));
+    threshold = mean(defl_init(1:i_sampling)) + cp_tolerance*std(defl_init(1:i_sampling));
     i_cp = i_start;
     while any(defl_init(i_cp - 1:i_cp) > threshold)
         i_cp = i_cp - 1;
@@ -71,7 +75,7 @@ for I = 1:nfiles
         defl_init = defl_raw(1:i_relaxed) * 1e9;
         fit_init = polyfit(1:i_sampling/2,defl_init(1:i_sampling/2),1);
         defl_init = defl_init - fit_init(1) * [1:i_relaxed]' - fit_init(2);
-        threshold = mean(defl_init(1:i_sampling/2)) + 2*std(defl_init(1:i_sampling/2));
+        threshold = mean(defl_init(1:i_sampling/2)) + cp_tolerance*std(defl_init(1:i_sampling/2));
         i_cp = i_start;
         while any(defl_init(i_cp - 2:i_cp) > threshold)
             i_cp = i_cp - 1;
@@ -146,10 +150,28 @@ for I = 1:nfiles
         plot(time,F,'k');
         plot(time,amp_F * cos(f_F * time * 2 * pi + phase_F),'LineWidth',1);
     end
-    %Calculate compressive moduli for pyramidal probe measurements
-    Eprime = 1e9*(1-nu^2)/(sqrt(2)*tan(half_angle)*h_indent)*F_fft(:,1)./Z_fft(:,1) .* cos(F_fft(:,3)-Z_fft(:,3)-0);
-    Eprimeprime = 1e9*(1-nu^2)/(sqrt(2)*tan(half_angle)*h_indent)*(F_fft(:,1)./Z_fft(:,1) .* sin(F_fft(:,3)-Z_fft(:,3)-0) - Z_fft(:,2)*b0);
-
+    %Calculate compressive moduli
+    switch probe_type
+        case "colloid" %Mahaffy et al., 2000:
+            Eprime = 1e6*(1-nu^2)/(2*sqrt(R*h_indent/1000)) * F_fft(:,1)./Z_fft(:,1) .* cos(F_fft(:,3)-Z_fft(:,3)-0);
+            Eprimeprime = 1e6*(1-nu^2)/(2*sqrt(R*h_indent/1000)) * (F_fft(:,1)./Z_fft(:,1) .* sin(F_fft(:,3)-Z_fft(:,3)-0) - Z_fft(:,2)*b0);
+        case "pyramid"
+            Eprime = 1e9*(1-nu^2)/(sqrt(2)*tan(half_angle)*h_indent)*F_fft(:,1)./Z_fft(:,1) .* cos(F_fft(:,3)-Z_fft(:,3)-0);
+            Eprimeprime = 1e9*(1-nu^2)/(sqrt(2)*tan(half_angle)*h_indent)*(F_fft(:,1)./Z_fft(:,1) .* sin(F_fft(:,3)-Z_fft(:,3)-0) - Z_fft(:,2)*b0);
+        case "blunted pyramid" %Based on contact mechanics model from Rico et al., 2005:
+            b = Rc*cos(half_angle); %nm, size of blunted tip region
+            a = ceil(b):1:10000; %nm, effective contact radius
+            d = a/tan(half_angle) * 2^(3/2) / pi .* (pi/2 - asin(b./a)) - a./Rc.*(sqrt(a.^2-b.^2) - a); %nm, indentation depth delta
+            Fstar = 1e-6 * 2/(1 - nu^2) * (d.*a - sqrt(2)/pi*a.^2/tan(half_angle).*(pi/2 - asin(b./a)) - a.^3/(3*Rc) ...
+                + sqrt(a.^2-b.^2).*(sqrt(2)/pi*b/tan(half_angle) + (a.^2-b.^2)/(3*Rc))); %nN/kPa. (Fstar = F/E, expression for force divided by Young's modulus)
+            dFstar_da = diff(Fstar)/1; %(nN/kPa)/nm (step size of vector a is 1 nm). numerical derivative d(F/E)/da
+            da_dd = 1./diff(d); %nm/nm (step size of vector a is 1 nm) numerical derivative da/d(delta)
+            i_d0 = find(d>h_indent,1); %index for experimental baseline indentation depth
+            a0 = a(i_d0); %experimental effective contact radius
+            Eprime = 1e3 * 1/(dFstar_da(i_d0)*da_dd(i_d0)) * F_fft(:,1)./Z_fft(:,1) .* cos(F_fft(:,3)-Z_fft(:,3)-0);
+            Eprimeprime = 1e3 * 1/(dFstar_da(i_d0)*da_dd(i_d0)) * (F_fft(:,1)./Z_fft(:,1) .* sin(F_fft(:,3)-Z_fft(:,3)-0) - Z_fft(:,2)*b0);
+    end
+    
     %Save results and figure
     results.Eprimes(I,:) = Eprime';
     results.Edoubleprimes(I,:) = Eprimeprime';
