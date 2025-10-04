@@ -173,9 +173,9 @@ for I = 1:nfiles
     end
     
     %Save results and figure
-    results.Eprimes(I,:) = Eprime';
-    results.Edoubleprimes(I,:) = Eprimeprime';
-    results.IndDepth(I) = h_indent / 1000;
+    results.Eprimes(I,:) = Eprime'; %Pa
+    results.Edoubleprimes(I,:) = Eprimeprime'; %Pa
+    results.IndDepth(I) = h_indent / 1000; %um
     saveas(figure(2),[datapath,foldername,'\',filename,'.png'])
     clf(2);
 end
